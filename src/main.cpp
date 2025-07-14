@@ -46,8 +46,6 @@
 
 esp_now_peer_info_t peerInfo;
 
-int cmd[100];
-
 float Throttle;
 float Phi, Theta, Psi;
 uint16_t Phi_bias = 2048;
@@ -59,7 +57,6 @@ short ystick = 0;
 uint8_t Mode = ANGLECONTROL;
 uint8_t AltMode = NOT_ALT_CONTROL_MODE;
 volatile uint8_t Loop_flag = 0;
-uint8_t send_flag = 1;
 float Timer = 0.0;
 float dTime = 0.01;
 uint8_t Timer_state = 0;
@@ -72,7 +69,9 @@ uint8_t is_peering = 0;
 uint8_t senddata[25]; // 19->22->23->24->25
 uint8_t disp_counter = 0;
 
+float telemetry_data[10];
 float Voltage_r; // batt電圧telemetry
+float mode_flag = 0;
 float vol;
 
 // StampFly MAC ADDRESS
@@ -88,8 +87,6 @@ volatile uint8_t Channel = CHANNEL;
 
 void rc_init(void);
 void data_send(void);
-void show_battery_info();
-void voltage_print(void);
 
 // 受信コールバック
 void OnDataRecv(const uint8_t *mac_addr, const uint8_t *recv_data, int data_len)
@@ -112,14 +109,14 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *recv_data, int data_len)
   else
   {
     // データ受信時に実行したい内容をここに書く。
-    float a;
+    float aaa; //受信4バイトからfloat変換用
     uint8_t *dummy;
     uint8_t offset = 0; // 2;
 
     // Channel_detected_flag++;
     // if(Channel_detected_flag>10)Channel_detected_flag=10;
     // Serial.printf("Channel=%d  ",Channel);
-    dummy = (uint8_t *)&a;
+    dummy = (uint8_t *)&aaa;
     dummy[0] = recv_data[0];
     dummy[1] = recv_data[1];
     if (dummy[0] == 0xF4)
@@ -127,15 +124,17 @@ void OnDataRecv(const uint8_t *mac_addr, const uint8_t *recv_data, int data_len)
     if ((dummy[0] == 99) && (dummy[1] == 99))
       Serial.printf("#PID Gain P Ti Td Eta ");
     // for (uint8_t i=0; i<((data_len-offset)/4); i++)
-    for (uint8_t i = 0; i < 1; i++)
+    for (uint8_t i = 0; i < 2; i++) //データ項目数分loop
     {
       dummy[0] = recv_data[i * 4 + 0 + offset];
       dummy[1] = recv_data[i * 4 + 1 + offset];
       dummy[2] = recv_data[i * 4 + 2 + offset];
       dummy[3] = recv_data[i * 4 + 3 + offset];
-      Voltage_r = a;
-      // Serial.printf("%3.2f ", Voltage_r);
+      telemetry_data[i] = aaa;
     }
+    //データ項目を増やすときは送信側telemetry.hppに項目追加する
+    Voltage_r = telemetry_data[0];
+    mode_flag = telemetry_data[1];
     Serial.printf("\r\n");
   }
 }
@@ -489,53 +488,6 @@ uint8_t check_alt_mode_change(void)
   return state;
 }
 
-void receiveCmd(void)
-{
-  int r = -1;            // -1 受信中 or 受信エラー
-  static int recptr = 0; // 受信した文字数を保存する
-  static char recv[30];  // 受信した文字列を保存する
-  int i = 0;
-  char rr = 0;
-
-  while (1)
-  { // すべての受信データを受け取る
-    int receive = Serial1.read();
-    // Serial.printf("%c",receive);
-    if (receive == -1)
-      break; // 受信データなし　ループを抜ける
-    recv[recptr] = receive;
-    int dd = receive;
-    if ((dd == ',') || (dd == ']') || (dd == '['))
-    {
-      rr = recv[recptr];
-      recv[recptr] = '\0';
-      recptr = 0;
-      char *ptr;
-      long rcvdata = strtol(recv, &ptr, 10); // 文字列を整数に変換
-      // Serial.printf("%d ",rcvdata);
-      if (recv[0] == '\0')
-        break; // 空行
-      if (errno != 0)
-        break; // エラー発生
-      if (*ptr != '\0')
-        break; // エラー発生
-      cmd[i] = int(rcvdata);
-      ++i;
-      if (rr == '\n')
-        break; // 　改行でループを抜ける
-    }
-    else
-    {
-      recptr++;
-      if (recptr > 100)
-        recptr = 0; // バッファーオーバーフロー対策
-    }
-  }
-  Serial.printf("%d %d %d %d", cmd[0], cmd[1], cmd[2], cmd[3]);
-  Serial.println();
-  return;
-}
-
 void loop()
 {
   uint16_t _throttle; // = getThrottle();
@@ -561,10 +513,6 @@ void loop()
       Timer_state = 1;
     else if (Timer_state == 1)
       Timer_state = 0;
-    if (send_flag == 1)
-      send_flag = 0;
-    else if (send_flag == 0)
-      send_flag = 1;
   }
 
   if (M5.Btn.pressedFor(400) == true)
@@ -615,8 +563,6 @@ void loop()
     Psi_bias = _psi;
   }
 
-  receiveCmd(); // toioからのデータ受信
-
   // 量産版
   Throttle = -(float)(_throttle - Throttle_bias) / (float)(RESO10BIT * 0.5);
   Phi = (float)(_phi - Phi_bias) / (float)(RESO10BIT * 0.5);
@@ -628,20 +574,6 @@ void loop()
   Phi = Phi + 0.0;
   Theta = Theta + 0.012;
   Psi = Psi - 0.047;
-
-  //DEMOモード
-  // if(AltMode == 4){
-  //   Theta = -0.05;
-  //   Psi = 0.15;
-  // }
-
-// 最終試作版
-#if 0
-  Throttle = (float)(_throttle - Throttle_bias)/(float)(RESO10BIT*0.5);
-  Phi =      (float)(_phi - Phi_bias)/(float)(RESO10BIT*0.5); 
-  Theta =   -(float)(_theta - Theta_bias)/(float)(RESO10BIT*0.5);
-  Psi =      (float)(_psi - Psi_bias)/(float)(RESO10BIT*0.5);
-#endif
 
   uint8_t *d_int;
 
@@ -686,26 +618,8 @@ void loop()
     senddata[24] = senddata[24] + senddata[i];
 
   // 送信
-  if (send_flag == 1)
-  {
-    esp_err_t result = esp_now_send(peerInfo.peer_addr, senddata, sizeof(senddata));
-  }
-#ifdef DEBUG
-  Serial.printf("%02X:%02X:%02X:%02X:%02X:%02X\n",
-                   peerInfo.peer_addr[0],
-                   peerInfo.peer_addr[1],
-                   peerInfo.peer_addr[2],
-                   peerInfo.peer_addr[3],
-                   peerInfo.peer_addr[4],
-                   peerInfo.peer_addr[5]);
-#endif
-  // Display information
-  // float vbat =0.0;// M5.Axp.GetBatVoltage();
-  // int8_t bat_charge_p = int8_t((vbat - 3.0) / 1.2 * 100);
+  esp_err_t result = esp_now_send(peerInfo.peer_addr, senddata, sizeof(senddata));
 
-  // M5.Lcd.setTextSize(2);
-  // M5.Lcd.setTextFont(4);
-  // M5.Lcd.setCursor(10, 10 + disp_counter * 30);
   M5.Lcd.setTextSize(2);
   M5.Lcd.setTextFont(0);
   M5.Lcd.setCursor(8, 5 + disp_counter * 16);
@@ -717,15 +631,15 @@ void loop()
     break;
   case 1:
     vol = Voltage_r;
-    if (vol > 10.0 || send_flag == 0)
+    if (vol > 10.0)
       vol = 0.0;
-    M5.Lcd.printf("V2 %2.2f ", vol);
+    M5.Lcd.printf("V2 %2.2f ", (float)vol);
     break;
   case 2:
     M5.Lcd.printf("DT %2.1f ", (float)ltime / 1000);
     break;
   case 3:
-    // M5.Lcd.printf("DEMO= %d     ", AltMode);
+    M5.Lcd.printf("MD %s ", mode_flag ? "drift" : "normal");
     break;
   case 4:
     // M5.Lcd.printf("y= %2.2f     ", Theta);
@@ -742,15 +656,15 @@ void loop()
   // case 5:
   //   M5.Lcd.printf("d= %d     ", cmd[3]);
   //   break;
-    // case 6:
-    //   M5.Lcd.printf("Time:%7.2f",Timer);
-    //   break;
-    // case 7:
-    //   break;
-    // case 8:
-    //   break;
-    // case 9:
-    //   break;
+  // case 6:
+  //   M5.Lcd.printf("Time:%7.2f",Timer);
+  //   break;
+  // case 7:
+  //   break;
+  // case 8:
+  //   break;
+  // case 9:
+  //   break;
   }
   disp_counter++;
   if (disp_counter == 6)
@@ -763,30 +677,4 @@ void loop()
     // M5.Lcd.println("AtomFly2.0");
     esp_restart();
   }
-}
-
-void show_battery_info()
-{
-#if 0
-  // バッテリー電圧表示
-  double vbat = 0.0;
-  int8_t bat_charge_p = 0;
-
-  vbat = M5.Axp.GetBatVoltage();
-  M5.Lcd.setCursor(5, 100);
-  //M5.Lcd.setTextSize(1);
-  M5.Lcd.printf("Volt:\n %8.2fV", vbat);
-
-  // バッテリー残量表示
-  bat_charge_p = int8_t((vbat - 3.0) / 1.2 * 100);
-  M5.Lcd.setCursor(5, 140);
-  M5.Lcd.printf("Charge:\n %8d%%", bat_charge_p);
-#endif
-}
-
-void voltage_print(void)
-{
-
-  // M5.Lcd.setCursor(0, 17, 2);
-  // M5.Lcd.printf("%3.1fV", Battery_voltage);
 }
